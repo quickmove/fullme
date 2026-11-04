@@ -66,6 +66,15 @@ copy target\release\fullme.exe %USERPROFILE%\bin\   # 放到任一 PATH 目录
 fullme.exe https://www.baidu.com   # GUI 出现在 Windows 桌面；单实例互斥锁为会话级全局，转发正常
 ```
 
+也可以在 WSL 侧装一个 `fullme` 入口（任意目录直接敲 `fullme`）：
+
+```bash
+mkdir -p ~/.local/bin ~/.local/share/fullme
+cp src-tauri/target/x86_64-pc-windows-msvc/release/fullme.exe ~/.local/share/fullme/
+printf '#!/bin/sh\nexec "$HOME/.local/share/fullme/fullme.exe" "$@"\n' > ~/.local/bin/fullme
+chmod +x ~/.local/bin/fullme   # ~/.local/bin 已由默认 .profile/.bashrc 加入 PATH
+```
+
 ### Windows 交叉构建（WSL/Linux，无需 Windows 实机）
 
 在 WSL 里直接产出 `fullme.exe`（已验证配方）：
