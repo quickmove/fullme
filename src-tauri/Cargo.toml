@@ -18,3 +18,6 @@ url = "2"
 # 守护化（fork/setsid/dup2）：GUI 跑子进程，调用方立即返回
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Windows：spawn 前取消本进程 stdio 继承标志（防止调用方管道被守护进程拖住）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation"] }

@@ -66,6 +66,33 @@ copy target\release\fullme.exe %USERPROFILE%\bin\   # 放到任一 PATH 目录
 fullme.exe https://www.baidu.com   # GUI 出现在 Windows 桌面；单实例互斥锁为会话级全局，转发正常
 ```
 
+### Windows 交叉构建（WSL/Linux，无需 Windows 实机）
+
+在 WSL 里直接产出 `fullme.exe`（已验证配方）：
+
+```bash
+# 1) Rust + MSVC 目标
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+source ~/.cargo/env && rustup target add x86_64-pc-windows-msvc
+
+# 2) cargo-xwin（自动下载 MSVC CRT/SDK）+ llvm-rc（资源编译）+ clang（预处理），免 root 解包
+cargo install cargo-xwin
+mkdir -p ~/opt/bin ~/opt/llvm-20 && cd /tmp
+apt-get download llvm-20 clang-20 libclang-cpp20 libclang1-20 libclang-common-20-dev
+for d in *.deb; do dpkg-deb -x "$d" ~/opt/llvm-20; done
+ln -sf ~/opt/llvm-20/usr/lib/llvm-20/bin/{llvm-rc,clang,llvm-ar,llvm-lib} ~/opt/bin/
+
+# 3) 构建
+cd src-tauri
+PATH="$HOME/.cargo/bin:$HOME/opt/bin:$PATH" \
+  cargo xwin build --release --target x86_64-pc-windows-msvc
+# 产物：target/x86_64-pc-windows-msvc/release/fullme.exe（PE32+ GUI，图标/版本资源已嵌入）
+```
+
+注意：`cargo xwin build` **必须显式带 `--target x86_64-pc-windows-msvc`** ——
+不带 target 会按主机平台构建（走到 gtk/glib 依赖上失败）；资源编译器 `llvm-rc`
+与 C 预处理器 `clang` 需在 PATH 中（embed-resource 对 msvc 目标在非 Windows 上默认找 `llvm-rc`）。
+
 （可选）在 macOS 上做 Windows 目标的编译检查——需一个 `llvm-rc` 桩让 tauri-winres 的
 build script 通过（真实构建在 Windows 上走系统 `rc.exe`）：
 
@@ -102,7 +129,7 @@ URL 可省略 scheme（自动补 `https://`），也支持 `about:` / `file:` / 
 | 需求 | 实现 |
 | --- | --- |
 | 多页签 | Tauri v2 `unstable` 多 webview：`Window::add_child` 每个页签一个子 webview，`show/hide` 切换 |
-| 命令不阻塞 | 启动器 spawn 全新子进程承载 GUI（`FULLME_DAEMON=1`，Unix: exec / Windows: DETACHED_PROCESS），经 stdout 管道握手就绪后返回；Unix 用 flock 启动锁、Windows 靠插件命名互斥锁消除首启竞态 |
+| 命令不阻塞 | 启动器 spawn 全新子进程承载 GUI（`FULLME_DAEMON=1`，Unix: exec / Windows: DETACHED_PROCESS），经 stdout 管道握手就绪后返回；Unix 用 flock 启动锁、Windows 靠插件命名互斥锁消除首启竞态。Windows 侧 spawn 前还须摘除启动器 stdio 的 `HANDLE_FLAG_INHERIT`，否则守护进程会连带复制调用方（WSL interop / 管道）的句柄，调用方要等 GUI 退出才读到 EOF（表现为命令不返回） |
 | 单实例转发 | `tauri-plugin-single-instance`（macOS Unix socket），第二实例把 argv 转发后退出 |
 | 页签池 FIFO | Rust 侧 `TabManager`（Vec 保序），池满 `remove(0)` 关闭最旧页签 |
 | 右上角定位 | `Monitor::work_area()` 计算物理坐标，`set_position` + `set_always_on_top` |
@@ -111,6 +138,11 @@ URL 可省略 scheme（自动补 `https://`），也支持 `about:` / `file:` / 
 > 实现注意：不能在加载了 AppKit/WebKit 的进程里 `fork` 后继续跑 Tauri ——
 > fork 污染会导致主线程 `CFRunLoop` 派发失效（`add_child` 永久卡死），
 > 必须用 `Command::spawn` + exec 出全新进程。调试可用 `FULLME_FOREGROUND=1` 跳过守护。
+>
+> 实现注意（跨平台）：`TAB_MANAGER` 锁**不可**跨 `add_child/show/hide/close/reload` 持有 ——
+> WebView2 创建期间 wry 经 `wait_with_pump` 泵消息，前端 `get_tabs` IPC 会重入同锁，
+> 同线程重入 `std::Mutex` 即永久自锁（症状：setup 卡在 `add_child`、事件循环停摆、
+> 单实例转发 10s 超时）。页签操作一律「锁内改数据、锁外碰 webview」。
 
 ## 目录结构
 

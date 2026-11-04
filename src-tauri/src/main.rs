@@ -106,9 +106,33 @@ fn spawn_daemon() -> std::io::Result<()> {
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
 
+    // Windows：摘除本进程 stdio 的继承标志。
+    // 调用方（cmd / PowerShell 管道 / WSL interop）的管道句柄挂在启动器的
+    // stdio 上，bInheritHandles 会把它们原样复制给守护子进程 —— 于是调用方
+    // 要等 GUI 退出、句柄全部释放后才能读到 EOF，表现为 fullme 命令迟迟不
+    // 返回（首启场景）。子进程 stdio 由 Stdio::null/piped 单独指定，不受影响。
+    #[cfg(windows)]
+    disarm_stdio_inherit();
+
     let mut child = cmd.spawn()?;
     wait_ready(&mut child);
     Ok(())
+}
+
+/// 取消 stdin/stdout/stderr 的 HANDLE_FLAG_INHERIT（句柄可能为空/无效，忽略失败）
+#[cfg(windows)]
+fn disarm_stdio_inherit() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    unsafe {
+        for h in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            SetHandleInformation(h as _, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
 }
 
 /// 等子进程写出就绪字节（首实例：单实例已接管、窗口已创建）

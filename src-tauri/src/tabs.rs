@@ -178,6 +178,11 @@ fn update_tab_meta(app: &AppHandle, label: &str, title: Option<&str>, url: Optio
 }
 
 /// 打开一个新页签；池满（默认 3）时 FIFO 关闭最旧页签
+///
+/// ⚠️ 锁纪律：`TAB_MANAGER` 锁绝不跨 `add_child/show/hide/close/reload` 持有。
+/// 这些 webview 操作内部可能泵消息（WebView2 异步完成回调经 `wait_with_pump`
+/// 派发），泵窗口内前端的 `get_tabs` 等 IPC 会重入 `lock_app()` —— 同线程
+/// 重入 `std::Mutex` 即永久自锁（Windows 实测：setup 卡死、消息泵停摆）。
 pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
     let url = normalize_url(raw_url);
     let parsed = Url::parse(&url).map_err(|e| format!("无效 URL {url}: {e}"))?;
@@ -185,27 +190,28 @@ pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
     let window = main_window(app).ok_or_else(|| "找不到主窗口".to_string())?;
     let host_window = window.as_ref().window();
 
-    let mut guard = lock_app();
-    let mgr = &mut *guard;
-
-    // FIFO：池满时先关最旧的
-    while mgr.tabs.len() >= POOL_SIZE {
-        let oldest = mgr.tabs.remove(0);
-        let _ = oldest.webview.close();
-        if mgr.active == Some(oldest.id) {
-            mgr.active = None;
+    // 1) 锁内：FIFO 淘汰出队 + 分配 id（仅数据操作）
+    let (id, label, initial_title, evicted) = {
+        let mut guard = lock_app();
+        let mgr = &mut *guard;
+        let mut evicted = Vec::new();
+        while mgr.tabs.len() >= POOL_SIZE {
+            let oldest = mgr.tabs.remove(0);
+            if mgr.active == Some(oldest.id) {
+                mgr.active = None;
+            }
+            evicted.push((oldest.id, oldest.url, oldest.webview));
         }
-        flog!(
-            "fullme: 池已满，FIFO 关闭最旧页签 #{} ({})",
-            oldest.id,
-            oldest.url
-        );
-    }
+        let id = mgr.next_id;
+        mgr.next_id += 1;
+        (id, format!("tab-{id}"), title_from_url(&parsed), evicted)
+    };
 
-    let id = mgr.next_id;
-    mgr.next_id += 1;
-    let label = format!("tab-{id}");
-    let initial_title = title_from_url(&parsed);
+    // 2) 锁外关闭淘汰页签
+    for (old_id, old_url, webview) in evicted {
+        let _ = webview.close();
+        flog!("fullme: 池已满，FIFO 关闭最旧页签 #{old_id} ({old_url})");
+    }
 
     let title_app = app.clone();
     let load_app = app.clone();
@@ -220,6 +226,7 @@ pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
             update_tab_meta(&load_app, webview.label(), title.as_deref(), Some(&url));
         });
 
+    // 3) 锁外创建子 webview（核心：不持锁跨这一步）
     let webview = host_window
         .add_child(
             builder,
@@ -228,20 +235,27 @@ pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
         )
         .map_err(|e| format!("创建页签失败: {e}"))?;
 
-    // 切换到新页签：隐藏其余，显示当前
-    for tab in mgr.tabs.iter() {
-        let _ = tab.webview.hide();
+    // 4) 锁内登记状态并取出其余页签句柄，释放后再锁外显隐
+    let others = {
+        let mut guard = lock_app();
+        let mgr = &mut *guard;
+        mgr.tabs.push(Tab {
+            id,
+            title: initial_title,
+            url: url.clone(),
+            webview: webview.clone(),
+        });
+        mgr.active = Some(id);
+        mgr.tabs
+            .iter()
+            .filter(|t| t.id != id)
+            .map(|t| t.webview.clone())
+            .collect::<Vec<_>>()
+    };
+    for other in others {
+        let _ = other.hide();
     }
     let _ = webview.show();
-
-    mgr.tabs.push(Tab {
-        id,
-        title: initial_title,
-        url: url.clone(),
-        webview,
-    });
-    mgr.active = Some(id);
-    drop(guard);
 
     flog!("fullme: 打开 {url} -> 页签 #{id} (共 {} 个)", {
         lock_app().tabs.len()
@@ -253,20 +267,28 @@ pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
 /// 切换活动页签
 #[tauri::command]
 pub fn switch_tab(app: AppHandle, id: u64) -> Result<(), String> {
-    let mut guard = lock_app();
-    let mgr = &mut *guard;
-    let idx = mgr
-        .index_of(id)
-        .ok_or_else(|| format!("页签 #{id} 不存在"))?;
-    if mgr.active == Some(id) {
-        return Ok(());
+    // 锁内决策，锁外执行显隐（见 add_tab 的锁纪律说明）
+    let plan = {
+        let mut guard = lock_app();
+        let mgr = &mut *guard;
+        let idx = mgr
+            .index_of(id)
+            .ok_or_else(|| format!("页签 #{id} 不存在"))?;
+        if mgr.active == Some(id) {
+            return Ok(());
+        }
+        let old = mgr
+            .active
+            .and_then(|a| mgr.index_of(a))
+            .map(|i| mgr.tabs[i].webview.clone());
+        let new = mgr.tabs[idx].webview.clone();
+        mgr.active = Some(id);
+        (old, new)
+    };
+    if let Some(old) = plan.0 {
+        let _ = old.hide();
     }
-    if let Some(current) = mgr.active.and_then(|a| mgr.index_of(a)) {
-        let _ = mgr.tabs[current].webview.hide();
-    }
-    let _ = mgr.tabs[idx].webview.show();
-    mgr.active = Some(id);
-    drop(guard);
+    let _ = plan.1.show();
     emit_tabs_updated(&app);
     Ok(())
 }
@@ -274,26 +296,36 @@ pub fn switch_tab(app: AppHandle, id: u64) -> Result<(), String> {
 /// 关闭指定页签；关闭的是活动页签时激活相邻页签
 #[tauri::command]
 pub fn close_tab(app: AppHandle, id: u64) -> Result<(), String> {
-    let mut guard = lock_app();
-    let mgr = &mut *guard;
-    let idx = mgr
-        .index_of(id)
-        .ok_or_else(|| format!("页签 #{id} 不存在"))?;
-    let removed = mgr.tabs.remove(idx);
+    // 锁内移除并决策，锁外 close/show（见 add_tab 的锁纪律说明）
+    let (removed, next_show) = {
+        let mut guard = lock_app();
+        let mgr = &mut *guard;
+        let idx = mgr
+            .index_of(id)
+            .ok_or_else(|| format!("页签 #{id} 不存在"))?;
+        let removed = mgr.tabs.remove(idx);
+        let next_show = if mgr.active == Some(id) {
+            if mgr.tabs.is_empty() {
+                mgr.active = None;
+                None
+            } else {
+                let next = idx.min(mgr.tabs.len() - 1);
+                let next_id = mgr.tabs[next].id;
+                mgr.active = Some(next_id);
+                Some(mgr.tabs[next].webview.clone())
+            }
+        } else {
+            None
+        };
+        (removed, next_show)
+    };
+
     let _ = removed.webview.close();
     flog!("fullme: 关闭页签 #{} ({})", removed.id, removed.url);
 
-    if mgr.active == Some(id) {
-        if mgr.tabs.is_empty() {
-            mgr.active = None;
-        } else {
-            let next = idx.min(mgr.tabs.len() - 1);
-            let next_id = mgr.tabs[next].id;
-            let _ = mgr.tabs[next].webview.show();
-            mgr.active = Some(next_id);
-        }
+    if let Some(webview) = next_show {
+        let _ = webview.show();
     }
-    drop(guard);
     emit_tabs_updated(&app);
     Ok(())
 }
@@ -301,16 +333,21 @@ pub fn close_tab(app: AppHandle, id: u64) -> Result<(), String> {
 /// 刷新活动页签
 #[tauri::command]
 pub fn reload_active() -> Result<(), String> {
-    let guard = lock_app();
-    let id = guard
-        .active
-        .ok_or_else(|| "没有活动页签".to_string())?;
-    let tab = guard
-        .tabs
-        .iter()
-        .find(|t| t.id == id)
-        .ok_or_else(|| "没有活动页签".to_string())?;
-    tab.webview.reload().map_err(|e| format!("刷新失败: {e}"))
+    // 锁外 reload（可能泵消息）
+    let webview = {
+        let guard = lock_app();
+        let id = guard
+            .active
+            .ok_or_else(|| "没有活动页签".to_string())?;
+        guard
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| "没有活动页签".to_string())?
+            .webview
+            .clone()
+    };
+    webview.reload().map_err(|e| format!("刷新失败: {e}"))
 }
 
 /// 退出应用
