@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fullme</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="no-tabs">
+    <!-- 页签栏：24px，可拖拽区仅限 grip 与背景（按钮/页签保持可点击） -->
+    <header id="tabbar">
+      <div id="grip" title="拖动窗口" data-tauri-drag-region>⠿</div>
+      <div id="tabs"></div>
+      <div id="actions">
+        <button id="btn-reload" title="刷新当前页签">⟳</button>
+        <button id="btn-quit" title="退出 fullme">✕</button>
+      </div>
+    </header>
+
+    <!-- 内容区占位：无页签时显示（有页签时被子 webview 覆盖） -->
+    <main id="empty">fullme</main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

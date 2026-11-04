@@ -1,0 +1,142 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 320px;
+  height: 160px;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  background: #171a21;
+  color: #c9d1d9;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---------- 页签栏（24px） ---------- */
+#tabbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: stretch;
+  background: #1f2430;
+  border-bottom: 1px solid #0d0f14;
+}
+
+#grip {
+  flex: 0 0 auto;
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #596273;
+  cursor: grab;
+}
+#grip:active {
+  cursor: grabbing;
+}
+
+#tabs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  margin: 2px 1px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #8b949e;
+  background: transparent;
+}
+.tab:hover {
+  background: #262c39;
+  color: #c9d1d9;
+}
+.tab.active {
+  background: #2d3446;
+  color: #ffffff;
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.tab-close {
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1;
+  color: #6e7681;
+  opacity: 0;
+  border-radius: 3px;
+}
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+.tab-close:hover {
+  color: #ffffff;
+  background: #3d4452;
+}
+
+/* ---------- 右侧按钮 ---------- */
+#actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+}
+#actions button {
+  width: 18px;
+  border: none;
+  background: transparent;
+  color: #6e7681;
+  font-size: 11px;
+  cursor: pointer;
+}
+#actions button:hover {
+  color: #ffffff;
+  background: #262c39;
+}
+#btn-quit:hover {
+  background: #b62324;
+}
+
+/* ---------- 无页签占位 ---------- */
+#empty {
+  position: fixed;
+  top: 24px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 2px;
+  color: #3d4452;
+  background: #171a21;
+}
+body.no-tabs #empty {
+  display: flex;
+}
