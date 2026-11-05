@@ -58,6 +58,18 @@ document
   .getElementById("btn-reload")
   .addEventListener("click", () => invoke("reload_active").catch(showError));
 
+const modeBtn = document.getElementById("btn-mode");
+
+/** 按窗口模式切换按钮图标：正常 → `─`（缩小），缩小 → `⤢`（恢复） */
+function renderMode(snap) {
+  modeBtn.textContent = snap.compact ? "⤢" : "─";
+  modeBtn.title = snap.compact ? "恢复正常大小" : "缩小窗口（仅保留标题栏）";
+}
+
+modeBtn.addEventListener("click", () =>
+  invoke("toggle_window_mode").catch(showError)
+);
+
 document
   .getElementById("btn-quit")
   .addEventListener("click", () => invoke("quit_app").catch(showError));
@@ -68,6 +80,7 @@ function showError(err) {
 
 // 先注册监听，再拉取快照，避免错过事件
 listen("tabs-updated", (e) => render(e.payload)).catch(showError);
+listen("window-mode-updated", (e) => renderMode(e.payload)).catch(showError);
 invoke("get_tabs")
   .then(render)
   .catch(showError);

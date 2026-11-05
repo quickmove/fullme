@@ -1,4 +1,4 @@
-//! fullme —— 右上角 320x160 多页签小浏览器（内容区 320x136）
+//! fullme —— 右下角 320x160 多页签小浏览器（内容区 320x136）
 //!
 //! - `fullme [url]...`：首次启动打开窗口并创建页签；已在运行时转发给现有实例追加页签
 //! - 页签池默认 3 个，FIFO：池满时先关闭最旧页签
@@ -8,6 +8,7 @@
 #[macro_use]
 mod log;
 mod tabs;
+mod window_mode;
 
 use std::io::Read;
 #[cfg(unix)]
@@ -17,12 +18,12 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, PhysicalPosition};
+use tauri::{AppHandle, Manager};
 
-use tabs::{add_tab, WINDOW_WIDTH};
+use tabs::add_tab;
 
 const USAGE: &str = "\
-fullme —— 右上角 320x160 多页签小浏览器
+fullme —— 右下角 320x160 多页签小浏览器
 
 用法:
   fullme [url]...   打开窗口并创建页签；窗口已存在时追加为新页签
@@ -196,24 +197,6 @@ fn reveal_window(app: &AppHandle) {
     }
 }
 
-/// 定位到主显示器工作区右上角（避开菜单栏 / Dock），并置顶
-fn position_top_right(window: &tauri::WebviewWindow) -> Result<(), String> {
-    let monitor = window
-        .primary_monitor()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "无法识别主显示器".to_string())?;
-    let work_area = monitor.work_area();
-    let scale = monitor.scale_factor();
-    let width = (WINDOW_WIDTH * scale).round() as i32;
-    let x = work_area.position.x + work_area.size.width as i32 - width;
-    let y = work_area.position.y;
-    window
-        .set_position(PhysicalPosition::new(x, y))
-        .map_err(|e| e.to_string())?;
-    window.set_always_on_top(true).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -267,6 +250,7 @@ fn main() {
             tabs::close_tab,
             tabs::reload_active,
             tabs::quit_app,
+            window_mode::toggle_window_mode,
         ])
         .setup(move |app| {
             flog!("fullme: [t+{:?}] setup 开始", started.elapsed());
@@ -277,8 +261,12 @@ fn main() {
             let window = app
                 .get_webview_window("main")
                 .ok_or_else(|| "找不到主窗口".to_string())?;
-            position_top_right(&window)?;
+            // 置于屏幕右下角（避开菜单栏 / Dock）并置顶
+            window_mode::anchor_bottom_right(&window, window_mode::Mode::Normal)?;
+            window.set_always_on_top(true).map_err(|e| e.to_string())?;
             tabs::set_main_window(&window);
+            // 模式循环监听：正常空闲 3 分钟 → 缩小；缩小 20 分钟 → 恢复（新建页签/刷新会重置）
+            window_mode::spawn_idle_watch(app.handle().clone());
             flog!("fullme: [t+{:?}] 窗口就绪", started.elapsed());
 
             let urls = positional_urls(std::env::args().skip(1));

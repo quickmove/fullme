@@ -2,7 +2,7 @@
 name = "fullme"
 version = "0.1.0"
 edition = "2021"
-description = "右上角 240x120 多页签小浏览器命令行工具"
+description = "右下角 320x160 多页签小浏览器命令行工具"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

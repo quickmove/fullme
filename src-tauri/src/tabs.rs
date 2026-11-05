@@ -13,6 +13,8 @@ use tauri::{
 };
 use url::Url;
 
+use crate::window_mode;
+
 /// 页签池默认容量
 pub const POOL_SIZE: usize = 3;
 /// 窗口逻辑尺寸
@@ -261,6 +263,8 @@ pub fn add_tab(app: &AppHandle, raw_url: &str) -> Result<(), String> {
         lock_app().tabs.len()
     });
     emit_tabs_updated(app);
+    // 新页签：窗口恢复正常大小并重置空闲计时
+    window_mode::restore(app);
     Ok(())
 }
 
@@ -330,9 +334,24 @@ pub fn close_tab(app: AppHandle, id: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// 刷新活动页签
+/// 校准所有页签子 webview 的位置/尺寸（窗口尺寸变化后调用）
+///
+/// ⚠️ 锁纪律同 add_tab：锁内仅克隆句柄，锁外碰 webview。
+pub fn reposition_tabs() {
+    let webviews: Vec<Webview> = {
+        let guard = lock_app();
+        guard.tabs.iter().map(|t| t.webview.clone()).collect()
+    };
+    for webview in webviews {
+        let _ = webview.set_position(LogicalPosition::new(0.0, CONTENT_TOP));
+        let _ = webview.set_size(LogicalSize::new(WINDOW_WIDTH, CONTENT_HEIGHT));
+    }
+}
+
+/// 刷新活动页签；同时把窗口恢复正常大小并重置空闲计时
 #[tauri::command]
-pub fn reload_active() -> Result<(), String> {
+pub fn reload_active(app: AppHandle) -> Result<(), String> {
+    window_mode::restore(&app);
     // 锁外 reload（可能泵消息）
     let webview = {
         let guard = lock_app();
